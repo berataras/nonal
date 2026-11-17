@@ -1,25 +1,21 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Roboto } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const roboto = Roboto({
+  variable: "--font-roboto",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  weight: ["400", "500", "700"],
 });
 
 export const metadata: Metadata = {
   title: "nonal",
-  description: "Bilmediğin YouTube videolarını tek ekranda açar.",
+  description: "One unfamiliar YouTube video at a time.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="tr" className={`${geistSans.variable} ${geistMono.variable}`}>
+    <html lang="en" className={roboto.variable}>
       <body>{children}</body>
     </html>
   );

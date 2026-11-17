@@ -14,11 +14,11 @@ export async function POST(request: Request) {
   try {
     body = (await request.json()) as unknown;
   } catch {
-    return json({ video: null, message: "İstek okunamadı." }, 400);
+    return json({ video: null, message: "The request couldn’t be read." }, 400);
   }
 
   const parsed = parseRequest(body);
-  if (!parsed) return json({ video: null, message: "Mod veya dil geçersiz." }, 400);
+  if (!parsed) return json({ video: null, message: "The distance or language is invalid." }, 400);
 
   try {
     const result = await pickNext(parsed);
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error(error);
     if (isCatalogError(error)) return json({ video: null, message: CATALOG_READ_MESSAGE }, 500);
-    return json({ video: null, message: "Video aranırken bir hata oluştu." }, 500);
+    return json({ video: null, message: "Something went wrong while finding a video." }, 500);
   }
 }
 

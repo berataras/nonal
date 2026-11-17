@@ -11,6 +11,8 @@ export interface ICatalogVideo {
   title: string;
   channelId: string;
   channelTitle: string;
+  channelAvatarUrl?: string;
+  channelSubscriberCount?: number;
   topic: string;
   language: TStoredLanguage;
   publishedAt: string;
@@ -23,6 +25,8 @@ export interface INextVideo {
   title: string;
   channelId: string;
   channelTitle: string;
+  channelAvatarUrl?: string;
+  channelSubscriberCount?: number;
   topic: string;
   language: TStoredLanguage;
 }
@@ -58,6 +62,11 @@ export function isNextVideo(value: unknown): value is INextVideo {
     typeof video.title === "string" &&
     typeof video.channelId === "string" &&
     typeof video.channelTitle === "string" &&
+    (video.channelAvatarUrl === undefined || typeof video.channelAvatarUrl === "string") &&
+    (video.channelSubscriberCount === undefined ||
+      (typeof video.channelSubscriberCount === "number" &&
+        Number.isFinite(video.channelSubscriberCount) &&
+        video.channelSubscriberCount >= 0)) &&
     typeof video.topic === "string" &&
     isStoredLanguage(video.language)
   );

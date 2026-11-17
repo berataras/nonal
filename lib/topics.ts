@@ -102,9 +102,18 @@ export function isTopic(value: unknown): value is TTopic {
   return typeof value === "string" && topicSet.has(value);
 }
 
-export function pickRandom<T>(items: readonly T[]): T | undefined {
+export function pickRandom<T>(items: readonly T[], random: () => number = Math.random): T | undefined {
   if (items.length === 0) return undefined;
-  return items[Math.floor(Math.random() * items.length)];
+  return items[Math.floor(random() * items.length)];
+}
+
+export function shuffle<T>(items: readonly T[], random: () => number = Math.random): T[] {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
 }
 
 export function pickQuery(topic: TTopic, language: TLanguage): string {
@@ -116,41 +125,30 @@ export function pickQuery(topic: TTopic, language: TLanguage): string {
   return pickRandom(queries[language]) ?? queries[language][0];
 }
 
-export function pickTopic(
+export function topicCandidates(
   mode: TMode,
   currentTopic: TTopic | null,
-  home: readonly TTopic[],
-): TTopic | null {
-  const center = [...new Set(home)];
-  if (!currentTopic) {
-    if (mode === "same") return pickRandom(center.length > 0 ? center : TOPICS) ?? null;
-    if (mode === "near") {
-      const origin = pickRandom(center.length > 0 ? center : TOPICS);
-      if (!origin) return null;
-      return pickRandom(topicGraph[origin].near) ?? origin;
-    }
-    return pickRandom(topicsOutsideCenter(center)) ?? null;
-  }
+  random: () => number = Math.random,
+): TTopic[] {
+  if (!currentTopic) return shuffle(TOPICS, random);
+  if (mode === "same") return [currentTopic];
 
-  if (mode === "same") return currentTopic;
-  if (mode === "near") return pickRandom(topicGraph[currentTopic].near) ?? currentTopic;
+  const nearby = relatedTopics(currentTopic);
+  if (mode === "near") return shuffle(nearby, random);
 
-  const nearby = new Set<TTopic>([currentTopic, ...topicGraph[currentTopic].near]);
-  return pickRandom(TOPICS.filter((topic) => !nearby.has(topic))) ?? currentTopic;
+  const excluded = new Set<TTopic>([currentTopic, ...nearby]);
+  return shuffle(
+    TOPICS.filter((topic) => !excluded.has(topic)),
+    random,
+  );
 }
 
-function topicsOutsideCenter(center: readonly TTopic[]): TTopic[] {
-  if (center.length === 0) return [...TOPICS];
-
-  const excluded = new Set<TTopic>(center);
-  for (const topic of center) {
-    for (const neighbor of topicGraph[topic].near) excluded.add(neighbor);
+export function relatedTopics(topic: TTopic): TTopic[] {
+  const related = new Set<TTopic>(topicGraph[topic].near);
+  for (const candidate of TOPICS) {
+    const candidateNeighbors: readonly TTopic[] = topicGraph[candidate].near;
+    if (candidateNeighbors.includes(topic)) related.add(candidate);
   }
-
-  const distant = TOPICS.filter((topic) => !excluded.has(topic));
-  if (distant.length > 0) return [...distant];
-
-  const outsideHome = TOPICS.filter((topic) => !center.includes(topic));
-  if (outsideHome.length > 0) return [...outsideHome];
-  return [...TOPICS];
+  related.delete(topic);
+  return [...related];
 }

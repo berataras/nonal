@@ -16,7 +16,7 @@ import {
 import { pickQuery, type TTopic } from "@/lib/topics";
 import type { ICatalogVideo, TLanguage, TStoredLanguage } from "@/lib/types";
 
-export interface ISearchWeekInput {
+export interface ISearchWindowInput {
   topic: TTopic;
   language: TLanguage;
   knownChannelIds: readonly string[];
@@ -35,7 +35,12 @@ interface ISearchHit {
   publishedAt: string;
 }
 
-export async function searchTopicWeek(input: ISearchWeekInput): Promise<TYoutubeResult> {
+export interface IChannelProfile {
+  avatarUrl?: string;
+  subscriberCount?: number;
+}
+
+export async function searchTopicWindow(input: ISearchWindowInput): Promise<TYoutubeResult> {
   const key = process.env.YOUTUBE_API_KEY?.trim();
   if (!key) return { ok: false, message: MISSING_API_KEY_MESSAGE };
 
@@ -74,11 +79,33 @@ export async function searchTopicWeek(input: ISearchWeekInput): Promise<TYoutube
   if (!details.ok) return details;
 
   const hitById = new Map(hits.map((hit) => [hit.id, hit]));
-  return { ok: true, videos: readVideos(details.body, hitById, input) };
+  const videos = readVideos(details.body, hitById, input);
+  const profiles = await fetchChannelProfiles(videos.map((video) => video.channelId));
+  return {
+    ok: true,
+    videos: videos.map((video) => ({ ...video, ...profiles.get(video.channelId) })),
+  };
+}
+
+export async function fetchChannelProfiles(
+  channelIds: readonly string[],
+): Promise<ReadonlyMap<string, IChannelProfile>> {
+  const uniqueIds = [...new Set(channelIds)].slice(0, 50);
+  const key = process.env.YOUTUBE_API_KEY?.trim();
+  if (!key || uniqueIds.length === 0) return new Map();
+
+  const params = new URLSearchParams({
+    part: "snippet,statistics",
+    id: uniqueIds.join(","),
+    key,
+  });
+  const response = await fetchYoutube("channels", params);
+  if (!response.ok) return new Map();
+  return readChannelProfiles(response.body);
 }
 
 async function fetchYoutube(
-  resource: "search" | "videos",
+  resource: "channels" | "search" | "videos",
   params: URLSearchParams,
 ): Promise<{ ok: true; body: unknown } | { ok: false; message: string }> {
   let response: Response;
@@ -102,6 +129,55 @@ async function fetchYoutube(
     return { ok: false, message: failureMessage(response.status, body) };
   }
   return { ok: true, body };
+}
+
+function readChannelProfiles(body: unknown): ReadonlyMap<string, IChannelProfile> {
+  const profiles = new Map<string, IChannelProfile>();
+  if (!body || typeof body !== "object" || !("items" in body)) return profiles;
+  const items = (body as { items?: unknown }).items;
+  if (!Array.isArray(items)) return profiles;
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as {
+      id?: unknown;
+      snippet?: {
+        thumbnails?: {
+          default?: { url?: unknown };
+          medium?: { url?: unknown };
+          high?: { url?: unknown };
+        };
+      };
+      statistics?: {
+        hiddenSubscriberCount?: unknown;
+        subscriberCount?: unknown;
+      };
+    };
+    if (typeof record.id !== "string") continue;
+
+    const thumbnail =
+      record.snippet?.thumbnails?.high?.url ??
+      record.snippet?.thumbnails?.medium?.url ??
+      record.snippet?.thumbnails?.default?.url;
+    const avatarUrl =
+      typeof thumbnail === "string" && thumbnail.startsWith("https://") ? thumbnail : undefined;
+    const subscriberCount = readSubscriberCount(record.statistics);
+    if (!avatarUrl && subscriberCount === undefined) continue;
+    profiles.set(record.id, { avatarUrl, subscriberCount });
+  }
+
+  return profiles;
+}
+
+function readSubscriberCount(
+  statistics:
+    | { hiddenSubscriberCount?: unknown; subscriberCount?: unknown }
+    | undefined,
+): number | undefined {
+  if (!statistics || statistics.hiddenSubscriberCount === true) return undefined;
+  if (typeof statistics.subscriberCount !== "string") return undefined;
+  const count = Number(statistics.subscriberCount);
+  return Number.isFinite(count) && count >= 0 ? count : undefined;
 }
 
 function randomWindow(): { publishedAfter: string; publishedBefore: string } {
@@ -154,7 +230,7 @@ function readSearchHits(body: unknown): ISearchHit[] {
 function readVideos(
   body: unknown,
   hitById: ReadonlyMap<string, ISearchHit>,
-  input: ISearchWeekInput,
+  input: ISearchWindowInput,
 ): ICatalogVideo[] {
   if (!body || typeof body !== "object" || !("items" in body)) return [];
   const items = (body as { items?: unknown }).items;

@@ -1,6 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import Link from "next/link";
+import {
+  ChevronDown,
+  Languages,
+  LoaderCircle,
+  Orbit,
+  Repeat2,
+  SkipForward,
+  Telescope,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 
 import {
   isLanguage,
@@ -14,6 +26,8 @@ import {
 
 interface IYouTubePlayer {
   loadVideoById: (videoId: string) => void;
+  getDuration: () => number;
+  seekTo: (seconds: number, allowSeekAhead: boolean) => void;
   mute: () => void;
   unMute: () => void;
   playVideo: () => void;
@@ -37,7 +51,7 @@ interface IYouTubeNamespace {
       };
     },
   ) => IYouTubePlayer;
-  PlayerState: { ENDED: number };
+  PlayerState: { BUFFERING: number; ENDED: number; PLAYING: number };
 }
 
 interface ISession {
@@ -57,11 +71,17 @@ declare global {
 
 const MODE_KEY = "nonal-mode";
 const LANGUAGE_KEY = "nonal-language";
+const RANDOM_START_MIN_SECONDS = 15;
+const RANDOM_START_END_BUFFER_SECONDS = 45;
 const MODES = [
-  { id: "same", label: "Aynı tarz" },
-  { id: "near", label: "Yakın" },
-  { id: "far", label: "Uzak" },
-] as const satisfies readonly { id: TMode; label: string }[];
+  { id: "same", label: "Same", icon: Repeat2 },
+  { id: "near", label: "Near", icon: Orbit },
+  { id: "far", label: "Far", icon: Telescope },
+] as const satisfies readonly {
+  id: TMode;
+  label: string;
+  icon: typeof Repeat2;
+}[];
 
 const defaultSession: ISession = {
   mode: "far",
@@ -132,18 +152,18 @@ async function requestNext() {
     try {
       payload = (await response.json()) as unknown;
     } catch {
-      commit({ ...snapshot, pending: false, message: "Video istenemedi." });
+      commit({ ...snapshot, pending: false, message: "Couldn’t load a video." });
       return;
     }
     const message = readMessage(payload);
     const video = readVideo(payload);
     if (!response.ok || !video) {
-      commit({ ...snapshot, pending: false, message: message ?? "Video bulunamadı." });
+      commit({ ...snapshot, pending: false, message: message ?? "No video found." });
       return;
     }
     commit({ ...snapshot, pending: false, message: null, video });
   } catch {
-    commit({ ...snapshot, pending: false, message: "Video istenemedi." });
+    commit({ ...snapshot, pending: false, message: "Couldn’t load a video." });
   }
 }
 
@@ -185,11 +205,61 @@ function destroyPlayer(player: IYouTubePlayer) {
   }
 }
 
+function randomStartSeconds(duration: number, random: () => number = Math.random) {
+  const latestStart = duration - RANDOM_START_END_BUFFER_SECONDS;
+  if (latestStart <= RANDOM_START_MIN_SECONDS) return 0;
+  return Math.floor(
+    RANDOM_START_MIN_SECONDS + random() * (latestStart - RANDOM_START_MIN_SECONDS),
+  );
+}
+
+function formatSubscribers(count: number | undefined) {
+  if (count === undefined) return null;
+  const formatted = new Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(count);
+  return `${formatted} subscribers`;
+}
+
+function ChannelIdentity({ video }: { video: INextVideo }) {
+  const href = `https://www.youtube.com/channel/${video.channelId}`;
+  const subscriberText = formatSubscribers(video.channelSubscriberCount);
+  const initial = video.channelTitle.trim().charAt(0).toUpperCase() || "N";
+
+  return (
+    <a className="channel" href={href} target="_blank" rel="noreferrer">
+      <span className="avatar" aria-hidden="true">
+        <span>{initial}</span>
+        {video.channelAvatarUrl ? (
+          // The YouTube API asks clients to use the returned thumbnail URL unchanged.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={video.channelAvatarUrl}
+            alt=""
+            width="40"
+            height="40"
+            onError={(event) => {
+              event.currentTarget.hidden = true;
+            }}
+          />
+        ) : null}
+      </span>
+      <span className="channelCopy">
+        <strong>{video.channelTitle}</strong>
+        {subscriberText ? <span>{subscriberText}</span> : null}
+      </span>
+    </a>
+  );
+}
+
 export default function HomePage() {
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<IYouTubePlayer | null>(null);
   const loadedIdRef = useRef<string | null>(null);
+  const randomizedIdRef = useRef<string | null>(null);
   const current = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const hasVideo = current.video !== null;
   const [apiReady, setApiReady] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
@@ -220,7 +290,7 @@ export default function HomePage() {
         if (!cancelled) setApiReady(true);
       })
       .catch(() => {
-        if (!cancelled) setPlayerError("YouTube oynatıcısı yüklenemedi.");
+        if (!cancelled) setPlayerError("Couldn’t load the YouTube player.");
       });
     return () => {
       cancelled = true;
@@ -229,7 +299,7 @@ export default function HomePage() {
 
   useEffect(() => {
     const stage = stageRef.current;
-    if (!apiReady || !stage || !window.YT) return;
+    if (!apiReady || !hasVideo || !stage || !window.YT) return;
     let cancelled = false;
     const youtube = window.YT;
     const mount = document.createElement("div");
@@ -254,7 +324,23 @@ export default function HomePage() {
           setPlayerReady(true);
         },
         onStateChange: (event) => {
-          if (event.data === youtube.PlayerState.ENDED) void requestNext();
+          if (event.data === youtube.PlayerState.ENDED) {
+            void requestNext();
+            return;
+          }
+          if (
+            event.data !== youtube.PlayerState.BUFFERING &&
+            event.data !== youtube.PlayerState.PLAYING
+          ) {
+            return;
+          }
+          const videoId = loadedIdRef.current;
+          if (!videoId || randomizedIdRef.current === videoId) return;
+          const duration = player.getDuration();
+          if (!Number.isFinite(duration) || duration <= 0) return;
+          randomizedIdRef.current = videoId;
+          const startSeconds = randomStartSeconds(duration);
+          if (startSeconds > 0) player.seekTo(startSeconds, true);
         },
       },
     });
@@ -262,10 +348,11 @@ export default function HomePage() {
       cancelled = true;
       playerRef.current = null;
       loadedIdRef.current = null;
+      randomizedIdRef.current = null;
       destroyPlayer(player);
       mount.remove();
     };
-  }, [apiReady]);
+  }, [apiReady, hasVideo]);
 
   useEffect(() => {
     const player = playerRef.current;
@@ -289,55 +376,96 @@ export default function HomePage() {
   }
 
   const notice = playerError ?? current.message;
+  const soundLabel = muted ? "Turn sound on" : "Mute video";
 
   return (
-    <main className="screen">
-      <header className="bar">
-        <div className="modes" role="group" aria-label="Mesafe">
-          {MODES.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              aria-pressed={current.mode === item.id}
-              onClick={() => chooseMode(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <select
-          aria-label="Dil"
-          value={current.language}
-          onChange={(event) => {
-            if (isLanguage(event.target.value)) chooseLanguage(event.target.value);
-          }}
-        >
-          <option value="tr">TR</option>
-          <option value="en">EN</option>
-          <option value="all">Hepsi</option>
-        </select>
-        <span className="hint">R</span>
-        <button type="button" className="sound" aria-pressed={!muted} onClick={toggleSound}>
-          {muted ? "Ses" : "Sessiz"}
-        </button>
+    <main className="watchPage">
+      <header className="siteHeader">
+        <Link className="wordmark" href="/" aria-label="nonal home">
+          nonal<span aria-hidden="true" />
+        </Link>
       </header>
-      {notice ? <p className="notice">{notice}</p> : null}
-      {current.pending && current.video ? <p className="pending">Aranıyor</p> : null}
-      <div className="frame">
-        <div className="stage" ref={stageRef} />
-        <div className="caption">
-          <p>{current.video?.title ?? (current.pending ? "Aranıyor" : "nonal")}</p>
-          {current.video ? (
-            <a
-              href={`https://www.youtube.com/channel/${current.video.channelId}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {current.video.channelTitle}
-            </a>
+      <section className="playerFrame" aria-label="Video player">
+          <div className="stage" ref={stageRef} />
+          {current.pending ? (
+            <div className="loadingOverlay" role="status" aria-live="polite">
+              <LoaderCircle aria-hidden="true" />
+              <span>{current.video ? "Finding the next video" : "Finding a video"}</span>
+            </div>
           ) : null}
-        </div>
-      </div>
+          {notice ? (
+            <p className={`notice${current.video ? " noticeWithVideo" : ""}`} role="alert">
+              {notice}
+            </p>
+          ) : null}
+      </section>
+
+      <section className="videoDetails" aria-label="Video details">
+          <h1>{current.video?.title ?? (current.pending ? "Finding something unfamiliar…" : "nonal")}</h1>
+          <div className="metaRow">
+            {current.video ? <ChannelIdentity video={current.video} /> : <div className="channelPlaceholder" />}
+
+            <div className="actions" aria-label="Player controls">
+              <div className="modeGroup" role="group" aria-label="Discovery distance">
+                {MODES.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="actionButton modeButton"
+                      aria-pressed={current.mode === item.id}
+                      onClick={() => chooseMode(item.id)}
+                    >
+                      <Icon aria-hidden="true" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <label className="languageControl">
+                <Languages aria-hidden="true" />
+                <span className="srOnly">Language</span>
+                <select
+                  aria-label="Language"
+                  value={current.language}
+                  onChange={(event) => {
+                    if (isLanguage(event.target.value)) chooseLanguage(event.target.value);
+                  }}
+                >
+                  <option value="tr">TR</option>
+                  <option value="en">EN</option>
+                  <option value="all">All</option>
+                </select>
+                <ChevronDown className="chevron" aria-hidden="true" />
+              </label>
+
+              <button
+                type="button"
+                className="actionButton nextButton"
+                disabled={current.pending}
+                onClick={() => void requestNext()}
+              >
+                <SkipForward aria-hidden="true" />
+                <span>Next</span>
+                <kbd>R</kbd>
+              </button>
+
+              <button
+                type="button"
+                className="iconButton"
+                aria-label={soundLabel}
+                aria-pressed={!muted}
+                data-tooltip={soundLabel}
+                disabled={!playerReady || !current.video}
+                onClick={toggleSound}
+              >
+                {muted ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />}
+              </button>
+            </div>
+          </div>
+      </section>
     </main>
   );
 }
